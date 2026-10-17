@@ -1,0 +1,12 @@
+{
+	"name": "phi-uptime",
+	"private": true,
+	"type": "module",
+	"engines": {
+		"node": ">=24"
+	},
+	"scripts": {
+		"start": "node --disable-warning=ExperimentalWarning server.mjs",
+		"test": "node --test"
+	}
+}

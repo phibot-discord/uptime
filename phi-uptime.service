@@ -1,0 +1,15 @@
+[Unit]
+Description=phi uptime monitor and status API
+After=network-online.target phi-unpackd.service
+Wants=network-online.target
+
+[Service]
+WorkingDirectory=/mnt/nvme/phi/uptime
+EnvironmentFile=/mnt/nvme/phi/ill-sync/unpackd.env
+EnvironmentFile=-/mnt/nvme/phi/uptime/uptime.env
+ExecStart=/usr/local/bin/node --disable-warning=ExperimentalWarning server.mjs
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
