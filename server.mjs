@@ -26,8 +26,8 @@ const cfg = {
 	timeoutMs: Number(env.UPTIME_TIMEOUT_SEC || 10) * 1000,
 	keepMs: 31 * DAY,
 	cacheMs: 30_000,
-	publicUrl: trim(env.UPTIME_PUBLIC_URL) || "https://api.mdesk.tech/uptime",
-	workerUrl: trim(env.UPTIME_WORKER_URL) || "https://phi-ill-sync.ymyk.workers.dev",
+	publicUrl: trim(env.UPTIME_PUBLIC_URL) || "https://api.phibot.dev/uptime",
+	workerUrl: trim(env.UPTIME_WORKER_URL) || "https://sync.phibot.dev",
 	cf: {
 		account: env.CLOUDFLARE_ACCOUNT_ID?.trim(),
 		namespace: env.CLOUDFLARE_KV_NAMESPACE_ID?.trim(),
