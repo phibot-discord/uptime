@@ -11,7 +11,9 @@ import {
 	DAY,
 	parseCpu,
 	parseMem,
+	parsePhira,
 	summarizeHost,
+	summarizePhira,
 	summarizeTarget,
 } from "./lib.mjs";
 
@@ -37,6 +39,10 @@ const cfg = {
 		listen: env.UNPACK_LISTEN?.trim() || "127.0.0.1:8788",
 		secret: env.UNPACK_SECRET?.trim(),
 	},
+	phira: {
+		url: trim(env.UPTIME_PHIRA_URL) || "https://papi.phibot.dev",
+		token: env.UPTIME_PHIRA_TOKEN?.trim(),
+	},
 };
 
 async function probe(url, { headers, accept }) {
@@ -50,7 +56,7 @@ async function probe(url, { headers, accept }) {
 		const body = await res.text();
 		const latency = Math.round(performance.now() - started);
 		return accept(res.status, body)
-			? { ok: 1, latency, code: null }
+			? { ok: 1, latency, code: null, body }
 			: { ok: 0, latency, code: `http_${res.status}` };
 	} catch (err) {
 		const code = err?.name === "TimeoutError" ? "timeout" : "network";
@@ -59,6 +65,30 @@ async function probe(url, { headers, accept }) {
 }
 
 const notConfigured = async () => ({ ok: 0, latency: null, code: "not_configured" });
+
+function readJson(text) {
+	try {
+		return JSON.parse(text);
+	} catch {
+		return null;
+	}
+}
+
+async function checkPhira() {
+	const headers = { Authorization: `Bearer ${cfg.phira.token}` };
+	const result = await probe(`${cfg.phira.url}/v1/status`, {
+		headers,
+		accept: (status, body) => status === 200 && readJson(body)?.status === "ok",
+	});
+	if (!result.ok) return result;
+	const rooms = await fetch(`${cfg.phira.url}/v1/rooms`, {
+		headers,
+		signal: AbortSignal.timeout(cfg.timeoutMs),
+	})
+		.then((res) => res.text().then((text) => (res.ok ? readJson(text) : null)))
+		.catch(() => null);
+	return { ...result, phira: parsePhira(readJson(result.body), rooms) };
+}
 
 const TARGETS = [
 	{
@@ -100,6 +130,11 @@ const TARGETS = [
 			: notConfigured,
 	},
 	{
+		id: "phira",
+		slowMs: 1500,
+		run: cfg.phira.token ? checkPhira : notConfigured,
+	},
+	{
 		id: "assets",
 		slowMs: 1500,
 		missingIsDown: true,
@@ -132,6 +167,17 @@ db.exec(`
 		mem_total INTEGER,
 		load1 REAL
 	);
+	CREATE TABLE IF NOT EXISTS phira (
+		ts INTEGER PRIMARY KEY,
+		players INTEGER,
+		rooms INTEGER,
+		playing INTEGER,
+		cpu REAL,
+		cpu_proc REAL,
+		ram_proc INTEGER,
+		ram_used INTEGER,
+		ram_total INTEGER
+	);
 `);
 
 const insertCheck = db.prepare(
@@ -140,15 +186,22 @@ const insertCheck = db.prepare(
 const insertHost = db.prepare(
 	"INSERT OR REPLACE INTO host (ts, cpu, mem, mem_used, mem_total, load1) VALUES (?, ?, ?, ?, ?, ?)",
 );
+const insertPhira = db.prepare(
+	"INSERT OR REPLACE INTO phira (ts, players, rooms, playing, cpu, cpu_proc, ram_proc, ram_used, ram_total) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+);
 const selectChecks = db.prepare(
 	"SELECT ts, ok, latency, code FROM checks WHERE target = ? AND ts >= ? ORDER BY ts",
 );
 const selectHost = db.prepare(
 	"SELECT ts, cpu, mem, mem_used, mem_total, load1 FROM host WHERE ts >= ? ORDER BY ts",
 );
+const selectPhira = db.prepare(
+	"SELECT ts, players, rooms, playing, cpu, cpu_proc, ram_proc, ram_used, ram_total FROM phira WHERE ts >= ? ORDER BY ts",
+);
 const selectFirst = db.prepare("SELECT MIN(ts) AS first FROM checks");
 const purgeChecks = db.prepare("DELETE FROM checks WHERE ts < ?");
 const purgeHost = db.prepare("DELETE FROM host WHERE ts < ?");
+const purgePhira = db.prepare("DELETE FROM phira WHERE ts < ?");
 
 let lastCpu = null;
 let lastPurge = 0;
@@ -181,6 +234,10 @@ async function tick() {
 	try {
 		results.forEach((r, i) => {
 			insertCheck.run(ts, TARGETS[i].id, r.ok, r.latency, r.code);
+			if (r.phira) {
+				const p = r.phira;
+				insertPhira.run(ts, p.players, p.rooms, p.playing, p.cpu, p.cpuProc, p.ramProc, p.ramUsed, p.ramTotal);
+			}
 		});
 		db.exec("COMMIT");
 	} catch (err) {
@@ -191,6 +248,7 @@ async function tick() {
 	if (ts - lastPurge > 3_600_000) {
 		purgeChecks.run(ts - cfg.keepMs);
 		purgeHost.run(ts - cfg.keepMs);
+		purgePhira.run(ts - cfg.keepMs);
 		lastPurge = ts;
 	}
 	cached = null;
@@ -227,6 +285,7 @@ function summary() {
 			cores: os.cpus().length,
 			uptimeSec: Math.round(os.uptime()),
 		}),
+		phira: summarizePhira(selectPhira.all(since), { now, intervalMs: cfg.intervalMs }),
 	});
 	cached = { at: now, body, gz: gzipSync(body) };
 	return cached;

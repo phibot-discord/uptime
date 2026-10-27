@@ -111,25 +111,47 @@ export function currentStatus(recent, { now, intervalMs, slowMs }) {
 	return "up";
 }
 
-export function hostBuckets(rows, { start, size, count }) {
+export function averageBuckets(rows, keys, { start, size, count }) {
 	const acc = Array.from({ length: count }, (_, i) => ({
 		t: start + i * size,
-		n: 0,
-		cpu: 0,
-		mem: 0,
+		sum: keys.map(() => 0),
+		n: keys.map(() => 0),
 	}));
 	for (const r of rows) {
 		const b = acc[Math.floor((r.ts - start) / size)];
 		if (!b) continue;
-		b.n++;
-		b.cpu += r.cpu;
-		b.mem += r.mem;
+		keys.forEach((k, j) => {
+			if (r[k] == null) return;
+			b.sum[j] += r[k];
+			b.n[j]++;
+		});
 	}
-	return acc.map((b) => ({
-		t: b.t,
-		cpu: b.n ? round1(b.cpu / b.n) : null,
-		mem: b.n ? round1(b.mem / b.n) : null,
-	}));
+	return acc.map((b) => {
+		const out = { t: b.t };
+		keys.forEach((k, j) => {
+			out[k] = b.n[j] ? round1(b.sum[j] / b.n[j]) : null;
+		});
+		return out;
+	});
+}
+
+export const hostBuckets = (rows, opts) => averageBuckets(rows, ["cpu", "mem"], opts);
+
+const num = (v) => (typeof v === "number" && Number.isFinite(v) ? v : null);
+const mb = (bytes) => (bytes == null ? null : Math.round(bytes / 1048576));
+
+export function parsePhira(status, rooms) {
+	const list = Array.isArray(rooms?.rooms) ? rooms.rooms : null;
+	return {
+		players: num(status?.players),
+		rooms: list ? list.length : null,
+		playing: list ? list.filter((r) => r?.state === "playing").length : null,
+		cpu: round1(num(status?.cpu?.system)),
+		cpuProc: round1(num(status?.cpu?.process)),
+		ramProc: num(status?.ram?.process),
+		ramUsed: num(status?.ram?.used),
+		ramTotal: num(status?.ram?.total),
+	};
 }
 
 export function summarizeTarget(target, rows, { now, firstTs, intervalMs }) {
@@ -168,5 +190,36 @@ export function summarizeHost(rows, { now, cores, uptimeSec }) {
 		sampledAt: last?.ts ?? null,
 		series24h: hostBuckets(rows, { start: slot - 287 * five, size: five, count: 288 }),
 		series30d: hostBuckets(rows, { start: hour - 719 * HOUR, size: HOUR, count: 720 }),
+	};
+}
+
+const PHIRA_KEYS = ["players", "rooms", "cpu", "mem"];
+
+export function summarizePhira(rows, { now, intervalMs }) {
+	const points = rows.map((r) => ({
+		ts: r.ts,
+		players: r.players,
+		rooms: r.rooms,
+		cpu: r.cpu,
+		mem: r.ram_total ? round1((100 * r.ram_used) / r.ram_total) : null,
+	}));
+	const last = rows.at(-1);
+	const live = last && now - last.ts <= 5 * intervalMs ? last : null;
+	const five = 5 * MINUTE;
+	const slot = Math.floor(now / five) * five;
+	const hour = Math.floor(now / HOUR) * HOUR;
+	return {
+		players: live?.players ?? null,
+		rooms: live?.rooms ?? null,
+		playing: live?.playing ?? null,
+		cpu: live?.cpu ?? null,
+		cpuProcess: live?.cpu_proc ?? null,
+		mem: live ? (points.at(-1)?.mem ?? null) : null,
+		memProcessMb: mb(live?.ram_proc ?? null),
+		memUsedMb: mb(live?.ram_used ?? null),
+		memTotalMb: mb(live?.ram_total ?? null),
+		sampledAt: last?.ts ?? null,
+		series24h: averageBuckets(points, PHIRA_KEYS, { start: slot - 287 * five, size: five, count: 288 }),
+		series30d: averageBuckets(points, PHIRA_KEYS, { start: hour - 719 * HOUR, size: HOUR, count: 720 }),
 	};
 }

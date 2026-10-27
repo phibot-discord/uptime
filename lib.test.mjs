@@ -10,7 +10,9 @@ import {
 	MINUTE,
 	parseCpu,
 	parseMem,
+	parsePhira,
 	percentile,
+	summarizePhira,
 	summarizeTarget,
 	windowUptime,
 } from "./lib.mjs";
@@ -123,4 +125,63 @@ test("a target summary carries 30 days, 24 hours and the latest check", () => {
 	assert.equal(s.latencyMs, null);
 	assert.equal(s.uptime24h, 50);
 	assert.equal(s.days.at(-1).t, Date.UTC(2026, 9, 8));
+});
+
+test("phira samples keep counts only, never room or player names", () => {
+	const status = {
+		status: "ok",
+		players: 3,
+		cpu: { process: 3.54, system: 12.5 },
+		ram: { process: 52428800, used: 6442450944, total: 17179869184 },
+	};
+	const rooms = {
+		rooms: [
+			{ roomid: "1", state: "playing", players: [{ name: "a", id: 1 }] },
+			{ roomid: "2", state: "select_chart", players: [] },
+		],
+	};
+	assert.deepEqual(parsePhira(status, rooms), {
+		players: 3,
+		rooms: 2,
+		playing: 1,
+		cpu: 12.5,
+		cpuProc: 3.5,
+		ramProc: 52428800,
+		ramUsed: 6442450944,
+		ramTotal: 17179869184,
+	});
+	assert.equal(parsePhira(status, null).rooms, null);
+	assert.equal(parsePhira({ status: "ok" }, rooms).players, null);
+});
+
+test("phira summary shows live numbers only while samples are fresh", () => {
+	const now = Date.UTC(2026, 9, 27, 12, 0);
+	const row = (ts, players) => ({
+		ts,
+		players,
+		rooms: 2,
+		playing: 1,
+		cpu: 10,
+		cpu_proc: 1.5,
+		ram_proc: 52428800,
+		ram_used: 1073741824,
+		ram_total: 4294967296,
+	});
+	const fresh = summarizePhira([row(now - 6 * MINUTE, 2), row(now - MINUTE, 4)], {
+		now,
+		intervalMs: MINUTE,
+	});
+	assert.equal(fresh.players, 4);
+	assert.equal(fresh.mem, 25);
+	assert.equal(fresh.memProcessMb, 50);
+	assert.equal(fresh.memTotalMb, 4096);
+	assert.equal(fresh.series24h.length, 288);
+	assert.equal(fresh.series30d.length, 720);
+	assert.deepEqual(fresh.series24h.at(-2), { t: now - 5 * MINUTE, players: 4, rooms: 2, cpu: 10, mem: 25 });
+	assert.deepEqual(fresh.series30d.at(-2), { t: now - HOUR, players: 3, rooms: 2, cpu: 10, mem: 25 });
+
+	const stale = summarizePhira([row(now - 10 * MINUTE, 4)], { now, intervalMs: MINUTE });
+	assert.equal(stale.players, null);
+	assert.equal(stale.mem, null);
+	assert.equal(stale.sampledAt, now - 10 * MINUTE);
 });
